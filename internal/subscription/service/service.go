@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/ananaslegend/reposeetory/internal/subscription/domain"
+	"github.com/ananaslegend/reposeetory/pkg/transactor"
 )
 
 var repoNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
@@ -33,10 +34,14 @@ func normalizeRepo(s string) string {
 type Repository interface {
 	UpsertRepo(ctx context.Context, p domain.UpsertRepoParams) (int64, error)
 	CreateSubscription(ctx context.Context, p domain.CreateSubscriptionParams) (*domain.Subscription, error)
-	GetByConfirmToken(ctx context.Context, token string) (*domain.Subscription, error)
-	MarkConfirmed(ctx context.Context, p domain.MarkConfirmedParams) error
 	DeleteByUnsubscribeToken(ctx context.Context, token string) (bool, error)
 	ListByEmail(ctx context.Context, email string) ([]domain.SubscriptionView, error)
+}
+
+// ConfirmationCreator creates a pending confirmation notification row.
+// Called within the same transaction as CreateSubscription.
+type ConfirmationCreator interface {
+	Create(ctx context.Context, p domain.CreateConfirmationParams) error
 }
 
 // RemoteRepositoryProvider checks whether a GitHub repository exists.
@@ -46,7 +51,9 @@ type RemoteRepositoryProvider interface {
 
 // Config holds all dependencies and settings for Service.
 type Config struct {
+	Tx              transactor.Transactor
 	Repo            Repository
+	Confirms        ConfirmationCreator
 	GitHub          RemoteRepositoryProvider
 	AppBaseURL      string
 	ConfirmTokenTTL time.Duration
@@ -54,7 +61,9 @@ type Config struct {
 }
 
 type Service struct {
+	tx              transactor.Transactor
 	repo            Repository
+	confirms        ConfirmationCreator
 	github          RemoteRepositoryProvider
 	appBaseURL      string
 	confirmTokenTTL time.Duration
@@ -63,7 +72,9 @@ type Service struct {
 
 func New(cfg Config) *Service {
 	return &Service{
+		tx:              cfg.Tx,
 		repo:            cfg.Repo,
+		confirms:        cfg.Confirms,
 		github:          cfg.GitHub,
 		appBaseURL:      cfg.AppBaseURL,
 		confirmTokenTTL: cfg.ConfirmTokenTTL,
@@ -101,15 +112,24 @@ func (s *Service) Subscribe(ctx context.Context, p domain.SubscribeParams) error
 		return fmt.Errorf("generate unsubscribe token: %w", err)
 	}
 
-	_, err = s.repo.CreateSubscription(ctx, domain.CreateSubscriptionParams{
-		Email:                 p.Email,
-		RepositoryID:          repoID,
-		ConfirmToken:          confirmToken,
-		ConfirmTokenExpiresAt: time.Now().Add(s.confirmTokenTTL),
-		UnsubscribeToken:      unsubscribeToken,
+	err = s.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		sub, err := s.repo.CreateSubscription(ctx, domain.CreateSubscriptionParams{
+			Email:            p.Email,
+			RepositoryID:     repoID,
+			UnsubscribeToken: unsubscribeToken,
+		})
+		if err != nil {
+			return err // ErrAlreadyExists propagated as-is
+		}
+
+		return s.confirms.Create(ctx, domain.CreateConfirmationParams{
+			SubscriptionID: sub.ID,
+			Token:          confirmToken,
+			ExpiresAt:      time.Now().Add(s.confirmTokenTTL),
+		})
 	})
 	if err != nil {
-		return err // ErrAlreadyExists propagated as-is
+		return err
 	}
 
 	zerolog.Ctx(ctx).Info().
@@ -118,26 +138,6 @@ func (s *Service) Subscribe(ctx context.Context, p domain.SubscribeParams) error
 		Int64("repo_id", repoID).
 		Msg("subscription created")
 	s.m.subscriptionsCreated.Inc()
-	return nil
-}
-
-func (s *Service) Confirm(ctx context.Context, token string) error {
-	sub, err := s.repo.GetByConfirmToken(ctx, token)
-	if err != nil {
-		return err
-	}
-
-	now := time.Now()
-	if sub.ConfirmTokenExpiresAt != nil && now.After(*sub.ConfirmTokenExpiresAt) {
-		return domain.ErrTokenExpired
-	}
-
-	if err := s.repo.MarkConfirmed(ctx, domain.MarkConfirmedParams{ID: sub.ID, Now: now}); err != nil {
-		return fmt.Errorf("mark confirmed: %w", err)
-	}
-
-	zerolog.Ctx(ctx).Info().Int64("subscription_id", sub.ID).Msg("subscription confirmed")
-	s.m.subscriptionsConfirmed.Inc()
 	return nil
 }
 

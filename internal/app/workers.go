@@ -10,12 +10,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/ananaslegend/reposeetory/internal/config"
-	"github.com/ananaslegend/reposeetory/internal/confirmer"
-	confirmerrepo "github.com/ananaslegend/reposeetory/internal/confirmer/repository"
 	"github.com/ananaslegend/reposeetory/internal/notifier"
 	notifierrepo "github.com/ananaslegend/reposeetory/internal/notifier/repository"
 	"github.com/ananaslegend/reposeetory/internal/scanner"
 	scannerrepo "github.com/ananaslegend/reposeetory/internal/scanner/repository"
+	subscription_confirms "github.com/ananaslegend/reposeetory/internal/subscription_confirms"
+	screpo "github.com/ananaslegend/reposeetory/internal/subscription_confirms/repository"
 )
 
 func runWorkers(
@@ -49,9 +49,9 @@ func runWorkers(
 	wg.Add(1)
 	go func() { defer wg.Done(); notify.Run(ctx) }()
 
-	confirm := confirmer.New(confirmer.Config{
+	confirm := subscription_confirms.New(subscription_confirms.Config{
 		Tx:       txr,
-		Repo:     confirmerrepo.New(pool),
+		Repo:     screpo.New(pool),
 		Mailer:   mail,
 		Interval: cfg.ConfirmerInterval,
 		BaseURL:  cfg.AppBaseURL,

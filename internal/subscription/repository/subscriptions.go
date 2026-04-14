@@ -6,28 +6,24 @@ import (
 	"fmt"
 
 	"github.com/ananaslegend/reposeetory/internal/subscription/domain"
-	"github.com/jackc/pgx/v5"
+	"github.com/ananaslegend/reposeetory/pkg/transactor"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const uniqueViolationCode = "23505"
 
-func (r *Repository) CreateSubscription(ctx context.Context, p domain.CreateSubscriptionParams) (*domain.Subscription, error) {
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("create subscription: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
+func (r *Repository) conn(ctx context.Context) transactor.Conn {
+	return transactor.ConnFromContext(ctx, r.pool)
+}
 
+func (r *Repository) CreateSubscription(ctx context.Context, p domain.CreateSubscriptionParams) (*domain.Subscription, error) {
 	var sub domain.Subscription
-	err = tx.QueryRow(ctx, `
-		INSERT INTO subscriptions
-			(email, repository_id, confirm_token, confirm_token_expires_at, unsubscribe_token)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, email, repository_id, confirmed_at, confirm_token, confirm_token_expires_at, unsubscribe_token, created_at
-	`, p.Email, p.RepositoryID, p.ConfirmToken, p.ConfirmTokenExpiresAt, p.UnsubscribeToken).Scan(
+	err := r.conn(ctx).QueryRow(ctx, `
+		INSERT INTO subscriptions (email, repository_id, unsubscribe_token)
+		VALUES ($1, $2, $3)
+		RETURNING id, email, repository_id, unsubscribe_token, created_at
+	`, p.Email, p.RepositoryID, p.UnsubscribeToken).Scan(
 		&sub.ID, &sub.Email, &sub.RepositoryID,
-		&sub.ConfirmedAt, &sub.ConfirmToken, &sub.ConfirmTokenExpiresAt,
 		&sub.UnsubscribeToken, &sub.CreatedAt,
 	)
 	if err != nil {
@@ -37,50 +33,7 @@ func (r *Repository) CreateSubscription(ctx context.Context, p domain.CreateSubs
 		}
 		return nil, fmt.Errorf("create subscription: %w", err)
 	}
-
-	if _, err = tx.Exec(ctx, `
-		INSERT INTO confirmation_notifications (subscription_id) VALUES ($1)
-	`, sub.ID); err != nil {
-		return nil, fmt.Errorf("create subscription: queue confirmation: %w", err)
-	}
-
-	if err = tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("create subscription: commit: %w", err)
-	}
-
 	return &sub, nil
-}
-
-func (r *Repository) GetByConfirmToken(ctx context.Context, token string) (*domain.Subscription, error) {
-	var sub domain.Subscription
-	err := r.pool.QueryRow(ctx, `
-		SELECT id, email, repository_id, confirmed_at, confirm_token, confirm_token_expires_at, unsubscribe_token, created_at
-		FROM subscriptions
-		WHERE confirm_token = $1
-	`, token).Scan(
-		&sub.ID, &sub.Email, &sub.RepositoryID,
-		&sub.ConfirmedAt, &sub.ConfirmToken, &sub.ConfirmTokenExpiresAt,
-		&sub.UnsubscribeToken, &sub.CreatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, domain.ErrTokenNotFound
-		}
-		return nil, fmt.Errorf("get by confirm token: %w", err)
-	}
-	return &sub, nil
-}
-
-func (r *Repository) MarkConfirmed(ctx context.Context, p domain.MarkConfirmedParams) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE subscriptions
-		SET confirmed_at = $1, confirm_token = NULL, confirm_token_expires_at = NULL
-		WHERE id = $2
-	`, p.Now, p.ID)
-	if err != nil {
-		return fmt.Errorf("mark confirmed: %w", err)
-	}
-	return nil
 }
 
 func (r *Repository) DeleteByUnsubscribeToken(ctx context.Context, token string) (bool, error) {
@@ -95,10 +48,11 @@ func (r *Repository) DeleteByUnsubscribeToken(ctx context.Context, token string)
 
 func (r *Repository) ListByEmail(ctx context.Context, email string) ([]domain.SubscriptionView, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT s.id, r.owner, r.name, s.confirmed_at, s.created_at
+		SELECT s.id, r.owner, r.name, sc.confirmed_at, s.created_at
 		FROM subscriptions s
 		JOIN repositories r ON r.id = s.repository_id
-		WHERE s.email = $1 AND s.confirmed_at IS NOT NULL
+		JOIN subscription_confirmations sc ON sc.subscription_id = s.id AND sc.confirmed_at IS NOT NULL
+		WHERE s.email = $1
 		ORDER BY s.created_at DESC
 	`, email)
 	if err != nil {

@@ -71,21 +71,6 @@ func (mr *MockRepositoryMockRecorder) DeleteByUnsubscribeToken(ctx, token any) *
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteByUnsubscribeToken", reflect.TypeOf((*MockRepository)(nil).DeleteByUnsubscribeToken), ctx, token)
 }
 
-// GetByConfirmToken mocks base method.
-func (m *MockRepository) GetByConfirmToken(ctx context.Context, token string) (*domain.Subscription, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetByConfirmToken", ctx, token)
-	ret0, _ := ret[0].(*domain.Subscription)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetByConfirmToken indicates an expected call of GetByConfirmToken.
-func (mr *MockRepositoryMockRecorder) GetByConfirmToken(ctx, token any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetByConfirmToken", reflect.TypeOf((*MockRepository)(nil).GetByConfirmToken), ctx, token)
-}
-
 // ListByEmail mocks base method.
 func (m *MockRepository) ListByEmail(ctx context.Context, email string) ([]domain.SubscriptionView, error) {
 	m.ctrl.T.Helper()
@@ -101,20 +86,6 @@ func (mr *MockRepositoryMockRecorder) ListByEmail(ctx, email any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByEmail", reflect.TypeOf((*MockRepository)(nil).ListByEmail), ctx, email)
 }
 
-// MarkConfirmed mocks base method.
-func (m *MockRepository) MarkConfirmed(ctx context.Context, p domain.MarkConfirmedParams) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MarkConfirmed", ctx, p)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// MarkConfirmed indicates an expected call of MarkConfirmed.
-func (mr *MockRepositoryMockRecorder) MarkConfirmed(ctx, p any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkConfirmed", reflect.TypeOf((*MockRepository)(nil).MarkConfirmed), ctx, p)
-}
-
 // UpsertRepo mocks base method.
 func (m *MockRepository) UpsertRepo(ctx context.Context, p domain.UpsertRepoParams) (int64, error) {
 	m.ctrl.T.Helper()
@@ -128,6 +99,44 @@ func (m *MockRepository) UpsertRepo(ctx context.Context, p domain.UpsertRepoPara
 func (mr *MockRepositoryMockRecorder) UpsertRepo(ctx, p any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertRepo", reflect.TypeOf((*MockRepository)(nil).UpsertRepo), ctx, p)
+}
+
+// MockConfirmationCreator is a mock of ConfirmationCreator interface.
+type MockConfirmationCreator struct {
+	ctrl     *gomock.Controller
+	recorder *MockConfirmationCreatorMockRecorder
+	isgomock struct{}
+}
+
+// MockConfirmationCreatorMockRecorder is the mock recorder for MockConfirmationCreator.
+type MockConfirmationCreatorMockRecorder struct {
+	mock *MockConfirmationCreator
+}
+
+// NewMockConfirmationCreator creates a new mock instance.
+func NewMockConfirmationCreator(ctrl *gomock.Controller) *MockConfirmationCreator {
+	mock := &MockConfirmationCreator{ctrl: ctrl}
+	mock.recorder = &MockConfirmationCreatorMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockConfirmationCreator) EXPECT() *MockConfirmationCreatorMockRecorder {
+	return m.recorder
+}
+
+// Create mocks base method.
+func (m *MockConfirmationCreator) Create(ctx context.Context, p domain.CreateConfirmationParams) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Create", ctx, p)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Create indicates an expected call of Create.
+func (mr *MockConfirmationCreatorMockRecorder) Create(ctx, p any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockConfirmationCreator)(nil).Create), ctx, p)
 }
 
 // MockRemoteRepositoryProvider is a mock of RemoteRepositoryProvider interface.

@@ -53,9 +53,13 @@ func (r *Repository) GetRepositoriesWithLock(ctx context.Context, limit int) ([]
 func (r *Repository) InsertNotifications(ctx context.Context, repoID int64, tag string) error {
 	_, err := r.conn(ctx).Exec(ctx, `
 		INSERT INTO release_notifications (subscription_id, repository_id, release_tag)
-		SELECT id, $1, $2
-		FROM subscriptions
-		WHERE repository_id = $1 AND confirmed_at IS NOT NULL
+		SELECT s.id, $1, $2
+		FROM subscriptions s
+		WHERE s.repository_id = $1
+		  AND EXISTS (
+		      SELECT 1 FROM subscription_confirmations sc
+		      WHERE sc.subscription_id = s.id AND sc.confirmed_at IS NOT NULL
+		  )
 	`, repoID, tag)
 	if err != nil {
 		return fmt.Errorf("scanner: insert notifications repo %d: %w", repoID, err)

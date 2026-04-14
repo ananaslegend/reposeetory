@@ -14,14 +14,11 @@ type GitHubRepo struct {
 }
 
 type Subscription struct {
-	ID                    int64
-	Email                 string
-	RepositoryID          int64
-	ConfirmedAt           *time.Time
-	ConfirmToken          *string
-	ConfirmTokenExpiresAt *time.Time
-	UnsubscribeToken      string
-	CreatedAt             time.Time
+	ID               int64
+	Email            string
+	RepositoryID     int64
+	UnsubscribeToken string
+	CreatedAt        time.Time
 }
 
 type SubscriptionView struct {
@@ -50,16 +47,15 @@ type UpsertRepoParams struct {
 }
 
 type CreateSubscriptionParams struct {
-	Email                 string
-	RepositoryID          int64
-	ConfirmToken          string
-	ConfirmTokenExpiresAt time.Time
-	UnsubscribeToken      string
+	Email            string
+	RepositoryID     int64
+	UnsubscribeToken string
 }
 
-type MarkConfirmedParams struct {
-	ID  int64
-	Now time.Time
+type CreateConfirmationParams struct {
+	SubscriptionID int64
+	Token          string
+	ExpiresAt      time.Time
 }
 
 type SendConfirmationParams struct {

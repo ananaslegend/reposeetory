@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	txmocks "github.com/ananaslegend/reposeetory/pkg/transactor/mocks"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.uber.org/mock/gomock"
@@ -17,18 +18,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newSvc(t *testing.T) (*service.Service, *mocks.MockRepository, *mocks.MockRemoteRepositoryProvider) {
+func newSvc(t *testing.T) (*service.Service, *txmocks.MockTransactor, *mocks.MockRepository, *mocks.MockConfirmationCreator, *mocks.MockRemoteRepositoryProvider) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
+	tx := txmocks.NewMockTransactor(ctrl)
 	repo := mocks.NewMockRepository(ctrl)
+	confirms := mocks.NewMockConfirmationCreator(ctrl)
 	gh := mocks.NewMockRemoteRepositoryProvider(ctrl)
 	svc := service.New(service.Config{
+		Tx:              tx,
 		Repo:            repo,
+		Confirms:        confirms,
 		GitHub:          gh,
 		AppBaseURL:      "http://localhost:8080",
 		ConfirmTokenTTL: 24 * time.Hour,
 	})
-	return svc, repo, gh
+	return svc, tx, repo, confirms, gh
+}
+
+// invokeWithinTransaction makes the mock call fn with the given context.
+func invokeWithinTransaction(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
 }
 
 var validSubscribeParams = domain.SubscribeParams{
@@ -39,18 +49,20 @@ var validSubscribeParams = domain.SubscribeParams{
 // --- Subscribe ---
 
 func TestSubscribe_HappyPath(t *testing.T) {
-	svc, repo, gh := newSvc(t)
+	svc, tx, repo, confirms, gh := newSvc(t)
 
 	gh.EXPECT().RepoExists(gomock.Any(), domain.RepoExistsParams{Owner: "golang", Name: "go"}).Return(true, nil)
 	repo.EXPECT().UpsertRepo(gomock.Any(), domain.UpsertRepoParams{Owner: "golang", Name: "go"}).Return(int64(1), nil)
+	tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction)
 	repo.EXPECT().CreateSubscription(gomock.Any(), gomock.Any()).Return(&domain.Subscription{ID: 1}, nil)
+	confirms.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 
 	err := svc.Subscribe(context.Background(), validSubscribeParams)
 	require.NoError(t, err)
 }
 
 func TestSubscribe_InvalidRepoFormat(t *testing.T) {
-	svc, _, _ := newSvc(t)
+	svc, _, _, _, _ := newSvc(t)
 
 	err := svc.Subscribe(context.Background(), domain.SubscribeParams{Email: "vasya@example.com", Repository: "not-a-repo"})
 	assert.ErrorIs(t, err, domain.ErrInvalidRepoFormat)
@@ -66,10 +78,12 @@ func TestSubscribe_FullRepoURL(t *testing.T) {
 	}
 	for _, url := range urls {
 		t.Run(url, func(t *testing.T) {
-			svc, repo, gh := newSvc(t)
+			svc, tx, repo, confirms, gh := newSvc(t)
 			gh.EXPECT().RepoExists(gomock.Any(), domain.RepoExistsParams{Owner: "golang", Name: "go"}).Return(true, nil)
 			repo.EXPECT().UpsertRepo(gomock.Any(), domain.UpsertRepoParams{Owner: "golang", Name: "go"}).Return(int64(1), nil)
+			tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction)
 			repo.EXPECT().CreateSubscription(gomock.Any(), gomock.Any()).Return(&domain.Subscription{ID: 1}, nil)
+			confirms.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 
 			err := svc.Subscribe(context.Background(), domain.SubscribeParams{Email: "vasya@example.com", Repository: url})
 			require.NoError(t, err)
@@ -78,7 +92,7 @@ func TestSubscribe_FullRepoURL(t *testing.T) {
 }
 
 func TestSubscribe_RepoNotFound(t *testing.T) {
-	svc, _, gh := newSvc(t)
+	svc, _, _, _, gh := newSvc(t)
 
 	gh.EXPECT().RepoExists(gomock.Any(), gomock.Any()).Return(false, nil)
 
@@ -87,56 +101,21 @@ func TestSubscribe_RepoNotFound(t *testing.T) {
 }
 
 func TestSubscribe_AlreadyExists(t *testing.T) {
-	svc, repo, gh := newSvc(t)
+	svc, tx, repo, _, gh := newSvc(t)
 
 	gh.EXPECT().RepoExists(gomock.Any(), gomock.Any()).Return(true, nil)
 	repo.EXPECT().UpsertRepo(gomock.Any(), gomock.Any()).Return(int64(1), nil)
+	tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction)
 	repo.EXPECT().CreateSubscription(gomock.Any(), gomock.Any()).Return(nil, domain.ErrAlreadyExists)
 
 	err := svc.Subscribe(context.Background(), validSubscribeParams)
 	assert.ErrorIs(t, err, domain.ErrAlreadyExists)
 }
 
-// --- Confirm ---
-
-func TestConfirm_HappyPath(t *testing.T) {
-	svc, repo, _ := newSvc(t)
-
-	exp := time.Now().Add(time.Hour)
-	token := "validtoken"
-	repo.EXPECT().GetByConfirmToken(gomock.Any(), token).
-		Return(&domain.Subscription{ID: 1, ConfirmToken: &token, ConfirmTokenExpiresAt: &exp}, nil)
-	repo.EXPECT().MarkConfirmed(gomock.Any(), gomock.Any()).Return(nil)
-
-	err := svc.Confirm(context.Background(), token)
-	require.NoError(t, err)
-}
-
-func TestConfirm_TokenNotFound(t *testing.T) {
-	svc, repo, _ := newSvc(t)
-
-	repo.EXPECT().GetByConfirmToken(gomock.Any(), "nosuchtoken").Return(nil, domain.ErrTokenNotFound)
-
-	err := svc.Confirm(context.Background(), "nosuchtoken")
-	assert.ErrorIs(t, err, domain.ErrTokenNotFound)
-}
-
-func TestConfirm_TokenExpired(t *testing.T) {
-	svc, repo, _ := newSvc(t)
-
-	past := time.Now().Add(-time.Hour)
-	token := "expiredtoken"
-	repo.EXPECT().GetByConfirmToken(gomock.Any(), token).
-		Return(&domain.Subscription{ID: 1, ConfirmToken: &token, ConfirmTokenExpiresAt: &past}, nil)
-
-	err := svc.Confirm(context.Background(), token)
-	assert.ErrorIs(t, err, domain.ErrTokenExpired)
-}
-
 // --- Unsubscribe ---
 
 func TestUnsubscribe_HappyPath(t *testing.T) {
-	svc, repo, _ := newSvc(t)
+	svc, _, repo, _, _ := newSvc(t)
 
 	repo.EXPECT().DeleteByUnsubscribeToken(gomock.Any(), "sometoken").Return(true, nil)
 
@@ -145,7 +124,7 @@ func TestUnsubscribe_HappyPath(t *testing.T) {
 }
 
 func TestUnsubscribe_TokenNotFound(t *testing.T) {
-	svc, repo, _ := newSvc(t)
+	svc, _, repo, _, _ := newSvc(t)
 
 	repo.EXPECT().DeleteByUnsubscribeToken(gomock.Any(), "nosuchtoken").Return(false, nil)
 
@@ -155,28 +134,34 @@ func TestUnsubscribe_TokenNotFound(t *testing.T) {
 
 // --- Metrics ---
 
-func newSvcWithRegistry(t *testing.T) (*service.Service, *mocks.MockRepository, *mocks.MockRemoteRepositoryProvider, *prometheus.Registry) {
+func newSvcWithRegistry(t *testing.T) (*service.Service, *txmocks.MockTransactor, *mocks.MockRepository, *mocks.MockConfirmationCreator, *mocks.MockRemoteRepositoryProvider, *prometheus.Registry) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
+	tx := txmocks.NewMockTransactor(ctrl)
 	repo := mocks.NewMockRepository(ctrl)
+	confirms := mocks.NewMockConfirmationCreator(ctrl)
 	gh := mocks.NewMockRemoteRepositoryProvider(ctrl)
 	reg := prometheus.NewRegistry()
 	svc := service.New(service.Config{
+		Tx:              tx,
 		Repo:            repo,
+		Confirms:        confirms,
 		GitHub:          gh,
 		AppBaseURL:      "http://localhost:8080",
 		ConfirmTokenTTL: 24 * time.Hour,
 		Registry:        reg,
 	})
-	return svc, repo, gh, reg
+	return svc, tx, repo, confirms, gh, reg
 }
 
 func TestService_Subscribe_IncrementsCreatedCounter(t *testing.T) {
-	svc, repo, gh, reg := newSvcWithRegistry(t)
+	svc, tx, repo, confirms, gh, reg := newSvcWithRegistry(t)
 
 	gh.EXPECT().RepoExists(gomock.Any(), gomock.Any()).Return(true, nil)
 	repo.EXPECT().UpsertRepo(gomock.Any(), gomock.Any()).Return(int64(1), nil)
+	tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction)
 	repo.EXPECT().CreateSubscription(gomock.Any(), gomock.Any()).Return(&domain.Subscription{ID: 1}, nil)
+	confirms.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 
 	err := svc.Subscribe(context.Background(), validSubscribeParams)
 	require.NoError(t, err)

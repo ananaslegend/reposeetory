@@ -19,7 +19,7 @@ import (
 // Repository is the storage contract for the scanner.
 type Repository interface {
 	GetRepositoriesWithLock(ctx context.Context, limit int) ([]domain.GitHubRepo, error)
-	InsertNotifications(ctx context.Context, repoID int64, tag string) error
+	InsertNotifications(ctx context.Context, repoID int64, tag string) error // todo
 	UpsertLastSeen(ctx context.Context, repoID int64, tag string) error
 }
 

@@ -16,18 +16,22 @@ import (
 
 type SubscriptionService interface {
 	Subscribe(ctx context.Context, p domain.SubscribeParams) error
-	Confirm(ctx context.Context, token string) error
 	Unsubscribe(ctx context.Context, token string) error
 	ListByEmail(ctx context.Context, email string) ([]domain.SubscriptionView, error)
 }
 
-type Handler struct {
-	svc   SubscriptionService
-	pages pages.Renderer
+type ConfirmService interface {
+	Confirm(ctx context.Context, token string) error
 }
 
-func NewHandler(svc SubscriptionService) *Handler {
-	return &Handler{svc: svc}
+type Handler struct {
+	svc      SubscriptionService
+	confirms ConfirmService
+	pages    pages.Renderer
+}
+
+func NewHandler(svc SubscriptionService, confirms ConfirmService) *Handler {
+	return &Handler{svc: svc, confirms: confirms}
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) {
@@ -108,7 +112,7 @@ func (h *Handler) Subscribe(w http.ResponseWriter, r *http.Request) {
 //	@Router			/api/confirm/{token} [get]
 func (h *Handler) Confirm(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
-	if err := h.svc.Confirm(r.Context(), token); err != nil {
+	if err := h.confirms.Confirm(r.Context(), token); err != nil {
 		switch {
 		case errors.Is(err, domain.ErrTokenNotFound):
 			h.pages.Unavailable(w, http.StatusNotFound)

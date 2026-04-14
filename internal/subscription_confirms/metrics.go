@@ -1,4 +1,4 @@
-package confirmer
+package subscription_confirms
 
 import "github.com/prometheus/client_golang/prometheus"
 

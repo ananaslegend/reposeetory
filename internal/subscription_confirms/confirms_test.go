@@ -1,29 +1,31 @@
-package confirmer_test
+package subscription_confirms_test
 
 import (
 	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	txmocks "github.com/ananaslegend/reposeetory/pkg/transactor/mocks"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.uber.org/mock/gomock"
 
-	"github.com/ananaslegend/reposeetory/internal/confirmer"
-	"github.com/ananaslegend/reposeetory/internal/confirmer/mocks"
 	"github.com/ananaslegend/reposeetory/internal/subscription/domain"
+	"github.com/ananaslegend/reposeetory/internal/subscription_confirms"
+	"github.com/ananaslegend/reposeetory/internal/subscription_confirms/mocks"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newConfirmer(t *testing.T) (*confirmer.Confirmer, *txmocks.MockTransactor, *mocks.MockRepository, *mocks.MockMailSender) {
+func newConfirmer(t *testing.T) (*subscription_confirms.Confirmer, *txmocks.MockTransactor, *mocks.MockRepository, *mocks.MockMailSender) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	tx := txmocks.NewMockTransactor(ctrl)
 	repo := mocks.NewMockRepository(ctrl)
 	m := mocks.NewMockMailSender(ctrl)
-	c := confirmer.New(confirmer.Config{Tx: tx, Repo: repo, Mailer: m, BaseURL: "http://localhost:8080"})
+	c := subscription_confirms.New(subscription_confirms.Config{Tx: tx, Repo: repo, Mailer: m, BaseURL: "http://localhost:8080"})
 	return c, tx, repo, m
 }
 
@@ -32,13 +34,15 @@ func invokeWithinTransaction(ctx context.Context, fn func(context.Context) error
 	return fn(ctx)
 }
 
-var testPending = confirmer.PendingConfirmation{
+var testPending = subscription_confirms.PendingConfirmation{
 	ID:           1,
 	Email:        "user@example.com",
 	ConfirmToken: "tok-abc123",
 	RepoOwner:    "golang",
 	RepoName:     "go",
 }
+
+// --- Flush tests ---
 
 func TestConfirmer_FlushEmpty_NoMailer(t *testing.T) {
 	c, tx, repo, _ := newConfirmer(t)
@@ -57,7 +61,7 @@ func TestConfirmer_FlushOne_MailerCalled(t *testing.T) {
 		tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction),
 	)
 	gomock.InOrder(
-		repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return([]confirmer.PendingConfirmation{testPending}, nil),
+		repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return([]subscription_confirms.PendingConfirmation{testPending}, nil),
 		repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return(nil, nil),
 	)
 	m.EXPECT().SendConfirmation(gomock.Any(), domain.SendConfirmationParams{
@@ -75,7 +79,7 @@ func TestConfirmer_FlushMailerError_NoMarkSentAndStops(t *testing.T) {
 
 	smtpErr := errors.New("smtp timeout")
 	tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction)
-	repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return([]confirmer.PendingConfirmation{testPending}, nil)
+	repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return([]subscription_confirms.PendingConfirmation{testPending}, nil)
 	m.EXPECT().SendConfirmation(gomock.Any(), gomock.Any()).Return(smtpErr)
 	// MarkSent must NOT be called on mailer error
 
@@ -85,7 +89,7 @@ func TestConfirmer_FlushMailerError_NoMarkSentAndStops(t *testing.T) {
 func TestConfirmer_FlushMultiple_ProcessedInOrder(t *testing.T) {
 	c, tx, repo, m := newConfirmer(t)
 
-	second := confirmer.PendingConfirmation{ID: 2, Email: "b@example.com", ConfirmToken: "tok-xyz", RepoOwner: "foo", RepoName: "bar"}
+	second := subscription_confirms.PendingConfirmation{ID: 2, Email: "b@example.com", ConfirmToken: "tok-xyz", RepoOwner: "foo", RepoName: "bar"}
 
 	gomock.InOrder(
 		tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction),
@@ -93,8 +97,8 @@ func TestConfirmer_FlushMultiple_ProcessedInOrder(t *testing.T) {
 		tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction),
 	)
 	gomock.InOrder(
-		repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return([]confirmer.PendingConfirmation{testPending}, nil),
-		repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return([]confirmer.PendingConfirmation{second}, nil),
+		repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return([]subscription_confirms.PendingConfirmation{testPending}, nil),
+		repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return([]subscription_confirms.PendingConfirmation{second}, nil),
 		repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return(nil, nil),
 	)
 	m.EXPECT().SendConfirmation(gomock.Any(), gomock.Any()).Return(nil).Times(2)
@@ -103,14 +107,55 @@ func TestConfirmer_FlushMultiple_ProcessedInOrder(t *testing.T) {
 	c.Flush(context.Background())
 }
 
-func newConfirmerWithRegistry(t *testing.T) (*confirmer.Confirmer, *txmocks.MockTransactor, *mocks.MockRepository, *mocks.MockMailSender, *prometheus.Registry) {
+// --- Confirm tests ---
+
+func TestConfirm_HappyPath(t *testing.T) {
+	c, tx, repo, _ := newConfirmer(t)
+
+	exp := time.Now().Add(time.Hour)
+	rec := &subscription_confirms.ConfirmRecord{NotifID: 1, SubscriptionID: 42, ExpiresAt: &exp}
+
+	tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction)
+	repo.EXPECT().GetByToken(gomock.Any(), "validtoken").Return(rec, nil)
+	repo.EXPECT().MarkConfirmed(gomock.Any(), int64(1), int64(42)).Return(nil)
+
+	err := c.Confirm(context.Background(), "validtoken")
+	require.NoError(t, err)
+}
+
+func TestConfirm_TokenNotFound(t *testing.T) {
+	c, tx, repo, _ := newConfirmer(t)
+
+	tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction)
+	repo.EXPECT().GetByToken(gomock.Any(), "nosuchtoken").Return(nil, domain.ErrTokenNotFound)
+
+	err := c.Confirm(context.Background(), "nosuchtoken")
+	assert.ErrorIs(t, err, domain.ErrTokenNotFound)
+}
+
+func TestConfirm_TokenExpired(t *testing.T) {
+	c, tx, repo, _ := newConfirmer(t)
+
+	past := time.Now().Add(-time.Hour)
+	rec := &subscription_confirms.ConfirmRecord{NotifID: 1, SubscriptionID: 42, ExpiresAt: &past}
+
+	tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction)
+	repo.EXPECT().GetByToken(gomock.Any(), "expiredtoken").Return(rec, nil)
+
+	err := c.Confirm(context.Background(), "expiredtoken")
+	assert.ErrorIs(t, err, domain.ErrTokenExpired)
+}
+
+// --- Metrics ---
+
+func newConfirmerWithRegistry(t *testing.T) (*subscription_confirms.Confirmer, *txmocks.MockTransactor, *mocks.MockRepository, *mocks.MockMailSender, *prometheus.Registry) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	tx := txmocks.NewMockTransactor(ctrl)
 	repo := mocks.NewMockRepository(ctrl)
 	m := mocks.NewMockMailSender(ctrl)
 	reg := prometheus.NewRegistry()
-	c := confirmer.New(confirmer.Config{Tx: tx, Repo: repo, Mailer: m, BaseURL: "http://localhost:8080", Registry: reg})
+	c := subscription_confirms.New(subscription_confirms.Config{Tx: tx, Repo: repo, Mailer: m, BaseURL: "http://localhost:8080", Registry: reg})
 	return c, tx, repo, m, reg
 }
 
@@ -122,7 +167,7 @@ func TestConfirmer_Flush_IncrementsEmailSentMetric(t *testing.T) {
 		tx.EXPECT().WithinTransaction(gomock.Any(), gomock.Any()).DoAndReturn(invokeWithinTransaction),
 	)
 	gomock.InOrder(
-		repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return([]confirmer.PendingConfirmation{testPending}, nil),
+		repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return([]subscription_confirms.PendingConfirmation{testPending}, nil),
 		repo.EXPECT().GetConfirmationsWithLock(gomock.Any(), 1).Return(nil, nil),
 	)
 	m.EXPECT().SendConfirmation(gomock.Any(), gomock.Any()).Return(nil)
